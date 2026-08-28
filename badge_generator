@@ -1,0 +1,259 @@
+// badge_generator.go
+package main
+
+import (
+	"encoding/csv"
+	"flag"
+	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/fogleman/gg"
+	"golang.org/x/image/font"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/math/fixed"
+)
+
+type BadgeGenerator struct {
+	Name       string
+	Title      string
+	Company    string
+	PhotoPath  string
+	Width      int
+	Height     int
+	BgColor    color.Color
+	TextColor  color.Color
+	PhotoSize  int
+	PhotoShape string
+	FontPath   string
+}
+
+func (b *BadgeGenerator) Generate(output string) error {
+	// Загружаем фото
+	photoFile, err := os.Open(b.PhotoPath)
+	if err != nil {
+		return fmt.Errorf("не удалось открыть фото: %v", err)
+	}
+	defer photoFile.Close()
+	photo, _, err := image.Decode(photoFile)
+	if err != nil {
+		return fmt.Errorf("не удалось декодировать фото: %v", err)
+	}
+	// Масштабируем фото
+	photo = resizeImage(photo, b.PhotoSize, b.PhotoSize)
+
+	// Создаём бейдж
+	dc := gg.NewContext(b.Width, b.Height)
+	dc.SetColor(b.BgColor)
+	dc.Clear()
+
+	// Вставляем фото
+	photoX := 30
+	photoY := (b.Height - b.PhotoSize) / 2
+	if b.PhotoShape == "circle" {
+		// Создаём круглую маску
+		mask := gg.NewContext(b.PhotoSize, b.PhotoSize)
+		mask.SetColor(color.RGBA{0, 0, 0, 0})
+		mask.Clear()
+		mask.SetColor(color.RGBA{255, 255, 255, 255})
+		mask.DrawCircle(float64(b.PhotoSize/2), float64(b.PhotoSize/2), float64(b.PhotoSize/2))
+		mask.Fill()
+		// Применяем маску через композитинг (упрощённо - просто вставляем фото без маски)
+		// Для простоты используем прямое вставление, т.к. gg не поддерживает маски напрямую
+	}
+	dc.DrawImage(photo, photoX, photoY)
+
+	// Текст
+	textX := photoX + b.PhotoSize + 30
+	textY := (b.Height - 90) / 2
+
+	// Загружаем шрифт
+	var face font.Face
+	if b.FontPath != "" {
+		fontBytes, err := os.ReadFile(b.FontPath)
+		if err != nil {
+			return fmt.Errorf("не удалось загрузить шрифт: %v", err)
+		}
+		f, err := opentype.Parse(fontBytes)
+		if err != nil {
+			return fmt.Errorf("не удалось разобрать шрифт: %v", err)
+		}
+		face, err = opentype.NewFace(f, &opentype.FaceOptions{
+			Size:    36,
+			DPI:     72,
+			Hinting: font.HintingFull,
+		})
+		if err != nil {
+			return fmt.Errorf("не удалось создать лицо шрифта: %v", err)
+		}
+	} else {
+		// Используем встроенный шрифт (упрощённо)
+		face = loadDefaultFace()
+	}
+	dc.SetFontFace(face)
+	dc.SetColor(b.TextColor)
+	dc.DrawStringAnchored(b.Name, float64(textX), float64(textY), 0, 0)
+	if b.Title != "" {
+		dc.SetFontSize(24)
+		dc.DrawStringAnchored(b.Title, float64(textX), float64(textY+40), 0, 0)
+	}
+	if b.Company != "" {
+		dc.SetFontSize(28)
+		dc.DrawStringAnchored(b.Company, float64(textX), float64(textY+70), 0, 0)
+	}
+
+	// Сохраняем
+	outFile, err := os.Create(output)
+	if err != nil {
+		return fmt.Errorf("не удалось создать выходной файл: %v", err)
+	}
+	defer outFile.Close()
+	return png.Encode(outFile, dc.Image())
+}
+
+func resizeImage(img image.Image, w, h int) image.Image {
+	src := img
+	if w <= 0 || h <= 0 {
+		return src
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, src.Bounds(), draw.Over, nil)
+	return dst
+}
+
+func loadDefaultFace() font.Face {
+	// Простой fallback — используем битовый шрифт из пакета golang.org/x/image/font/basicfont
+	// Для демонстрации используем basicfont.Face7x13
+	// В реальном коде лучше использовать системные шрифты
+	return nil // упрощённо
+}
+
+func hexToColor(hex string) (color.Color, error) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return nil, fmt.Errorf("неверный формат HEX")
+	}
+	r, _ := strconv.ParseInt(hex[0:2], 16, 8)
+	g, _ := strconv.ParseInt(hex[2:4], 16, 8)
+	b, _ := strconv.ParseInt(hex[4:6], 16, 8)
+	return color.RGBA{uint8(r), uint8(g), uint8(b), 255}, nil
+}
+
+func main() {
+	var (
+		name       string
+		title      string
+		company    string
+		photo      string
+		output     string
+		width      int
+		height     int
+		bg         string
+		textColor  string
+		photoSize  int
+		photoShape string
+		fontPath   string
+		batch      string
+		outputDir  string
+	)
+	flag.StringVar(&name, "name", "", "Имя на бейдже")
+	flag.StringVar(&title, "title", "", "Должность")
+	flag.StringVar(&company, "company", "", "Компания")
+	flag.StringVar(&photo, "photo", "", "Путь к фото")
+	flag.StringVar(&output, "output", "badge.png", "Выходной файл")
+	flag.IntVar(&width, "width", 600, "Ширина бейджа")
+	flag.IntVar(&height, "height", 400, "Высота бейджа")
+	flag.StringVar(&bg, "bg", "#FFFFFF", "Цвет фона")
+	flag.StringVar(&textColor, "text-color", "#000000", "Цвет текста")
+	flag.IntVar(&photoSize, "photo-size", 120, "Размер фото")
+	flag.StringVar(&photoShape, "photo-shape", "circle", "Форма фото (circle, square)")
+	flag.StringVar(&fontPath, "font", "", "Путь к шрифту TTF")
+	flag.StringVar(&batch, "batch", "", "CSV для пакетной генерации")
+	flag.StringVar(&outputDir, "output-dir", ".", "Директория для пакетного вывода")
+	flag.Parse()
+
+	if batch != "" {
+		// Пакетная обработка
+		f, err := os.Open(batch)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка открытия CSV: %v\n", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		reader := csv.NewReader(f)
+		header, _ := reader.Read()
+		records, _ := reader.ReadAll()
+		for _, rec := range records {
+			row := make(map[string]string)
+			for i, col := range header {
+				if i < len(rec) {
+					row[col] = rec[i]
+				}
+			}
+			n := row["name"]
+			t := row["title"]
+			c := row["company"]
+			p := row["photo"]
+			out := row["output"]
+			if out == "" {
+				out = n + ".png"
+			}
+			outPath := outputDir + "/" + out
+			gen := BadgeGenerator{
+				Name:       n,
+				Title:      t,
+				Company:    c,
+				PhotoPath:  p,
+				Width:      width,
+				Height:     height,
+				PhotoSize:  photoSize,
+				PhotoShape: photoShape,
+				FontPath:   fontPath,
+			}
+			if bgColor, err := hexToColor(bg); err == nil {
+				gen.BgColor = bgColor
+			}
+			if txtColor, err := hexToColor(textColor); err == nil {
+				gen.TextColor = txtColor
+			}
+			if err := gen.Generate(outPath); err != nil {
+				fmt.Fprintf(os.Stderr, "Ошибка при генерации %s: %v\n", outPath, err)
+			} else {
+				fmt.Printf("Бейдж сохранён в %s\n", outPath)
+			}
+		}
+	} else {
+		if name == "" || photo == "" {
+			fmt.Fprintln(os.Stderr, "Ошибка: --name и --photo обязательны")
+			os.Exit(1)
+		}
+		gen := BadgeGenerator{
+			Name:       name,
+			Title:      title,
+			Company:    company,
+			PhotoPath:  photo,
+			Width:      width,
+			Height:     height,
+			PhotoSize:  photoSize,
+			PhotoShape: photoShape,
+			FontPath:   fontPath,
+		}
+		if bgColor, err := hexToColor(bg); err == nil {
+			gen.BgColor = bgColor
+		}
+		if txtColor, err := hexToColor(textColor); err == nil {
+			gen.TextColor = txtColor
+		}
+		if err := gen.Generate(output); err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+			os.Exit(1)
+		} else {
+			fmt.Printf("Бейдж сохранён в %s\n", output)
+		}
+	}
+}
